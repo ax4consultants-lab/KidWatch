@@ -67,7 +67,7 @@
             android:name=".Activities.GenericEntryAlias"
             android:enabled="true"
             android:exported="true"
-            android:icon="@drawable/ic_settings"
+            android:icon="@mipmap/ic_launcher"
             android:label="Settings"
             android:targetActivity=".Activities.LoginActivity">
             <intent-filter>
