@@ -61,12 +61,20 @@
             android:exported="false" />
         <activity
             android:name=".Activities.LoginActivity"
-            android:exported="true">
+            android:exported="true" />
+
+        <activity-alias
+            android:name=".Activities.GenericEntryAlias"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@drawable/ic_settings"
+            android:label="Settings"
+            android:targetActivity=".Activities.LoginActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
 
         <service
             android:name=".Services.MonitoringService"
