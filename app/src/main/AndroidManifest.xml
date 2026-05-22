@@ -6,25 +6,25 @@
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
-
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- High-risk permission: gated in ChildSetupActivity#requestOverlay and consumed by BlockedScreenActivity launches from MonitoringService. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- High-risk app-op permission: user is routed to ACTION_USAGE_ACCESS_SETTINGS in ChildSetupActivity#requestUsageStats and validated in isUsageStatsAllowed(). -->
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
+
+    <!-- Required by MonitoringService#fetchAndUploadInstalledApps() using PackageManager#getInstalledApplications(). -->
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-
 
     <application
         android:allowBackup="true"
@@ -36,6 +36,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.KidShield"
         tools:targetApi="31">
+
         <activity
             android:name=".Activities.AppBlockerActivity"
             android:exported="false" />
@@ -59,19 +60,44 @@
         <activity
             android:name=".Activities.RegisterActivity"
             android:exported="false" />
+
+        <!-- Hidden primary launcher target; launcher exposure is controlled by aliases below. -->
         <activity
             android:name=".Activities.LoginActivity"
-            android:exported="true">
+            android:exported="false" />
+
+        <!-- Default launcher alias. Keep enabled for normal installs. -->
+        <activity-alias
+            android:name=".Activities.DefaultLauncherAlias"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/app_name"
+            android:targetActivity=".Activities.LoginActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
+
+        <!-- Optional disguised alias; keep disabled unless explicitly enabled at runtime by product policy. -->
+        <activity-alias
+            android:name=".Activities.DisguisedLauncherAlias"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="System Update"
+            android:targetActivity=".Activities.LoginActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
 
         <service
             android:name=".Services.MonitoringService"
-            android:foregroundServiceType="location|dataSync"
-            android:exported="false"/>
+            android:exported="false"
+            android:foregroundServiceType="location|dataSync" />
 
         <receiver
             android:name=".Utils.MyDeviceAdminReceiver"
@@ -101,17 +127,15 @@
             android:enabled="true"
             android:exported="false" />
 
-
         <meta-data
             android:name="com.google.android.geo.API_KEY"
             android:value="YOUR_API_KEY_HERE" />
 
-
         <service
             android:name=".Services.AppAccessibilityService"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false"
             android:label="@string/app_name"
-            android:exported="false">
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
