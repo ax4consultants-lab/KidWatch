@@ -11,15 +11,19 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.ResolveInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.database.Cursor;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.provider.CallLog;
 import android.provider.Telephony;
 import android.util.Log;
+import android.app.usage.UsageEvents;
+import android.app.usage.UsageStatsManager;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -44,6 +48,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 public class MonitoringService extends Service {
 
@@ -53,13 +58,36 @@ public class MonitoringService extends Service {
 
     public static final String ACTION_SYNC_DATA = "com.yousafdev.KidShield.ACTION_SYNC_DATA";
 
+    private static final long POLL_INTERVAL_MS = 2000L;
+    private static final long ENFORCEMENT_DEBOUNCE_MS = 1500L;
+    private static final long USAGE_LOOKBACK_MS = 10_000L;
+
     private FusedLocationProviderClient fusedLocationClient;
     private DatabaseReference databaseReference;
     private FirebaseUser currentUser;
 
-    private HashSet<String> blockedApps = new HashSet<>();
+    private final HashSet<String> blockedApps = new HashSet<>();
+    private final HashSet<String> baselineBlockedApps = new HashSet<>();
+    private final Object blockedAppsLock = new Object();
     private String lastForegroundApp = "";
+    private String lastBlockedPackage = "";
+    private long lastActionTs = 0L;
     private AppEventReceiver appEventReceiver;
+    private HandlerThread pollingThread;
+    private Handler pollingHandler;
+
+    private final Runnable pollingRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                pollAndEnforceBlockedApp();
+            } finally {
+                if (pollingHandler != null) {
+                    pollingHandler.postDelayed(this, POLL_INTERVAL_MS);
+                }
+            }
+        }
+    };
 
     @Override
     public void onCreate() {
@@ -78,7 +106,9 @@ public class MonitoringService extends Service {
         databaseReference = FirebaseDatabase.getInstance().getReference("users")
                 .child(currentUser.getUid());
 
+        seedBaselineBlockedApps();
         listenForBlockedApps();
+        startPollingThread();
 
         appEventReceiver = new AppEventReceiver();
         IntentFilter filter = new IntentFilter(AppAccessibilityService.ACTION_FOREGROUND_APP);
@@ -126,13 +156,17 @@ public class MonitoringService extends Service {
         databaseReference.child("blocked_apps").addValueEventListener(new ValueEventListener() {
             @Override
             public void onDataChange(@NonNull DataSnapshot dataSnapshot) {
-                blockedApps.clear();
+                HashSet<String> mergedBlockedApps = new HashSet<>(baselineBlockedApps);
                 for (DataSnapshot snapshot : dataSnapshot.getChildren()) {
                     if (Boolean.TRUE.equals(snapshot.getValue(Boolean.class))) {
-                        blockedApps.add(snapshot.getKey().replace("_", "."));
+                        mergedBlockedApps.add(normalizePackageName(snapshot.getKey().replace("_", ".")));
                     }
                 }
-                Log.d(TAG, "Blocked apps list updated: " + blockedApps.toString());
+                synchronized (blockedAppsLock) {
+                    blockedApps.clear();
+                    blockedApps.addAll(mergedBlockedApps);
+                }
+                Log.d(TAG, "Blocked apps list updated: " + mergedBlockedApps);
             }
 
             @Override
@@ -143,14 +177,133 @@ public class MonitoringService extends Service {
     }
 
     private void checkForegroundApp(String currentApp) {
-        if (!currentApp.equals(lastForegroundApp) && blockedApps.contains(currentApp)) {
-            Log.d(TAG, "Blocked app detected in foreground: " + currentApp);
+        lastForegroundApp = normalizePackageName(currentApp);
+        if (isBlockedPackage(lastForegroundApp) && shouldEnforceNow(lastForegroundApp, System.currentTimeMillis())) {
+            enforceBlockedApp(lastForegroundApp);
+        }
+    }
 
+    private void seedBaselineBlockedApps() {
+        baselineBlockedApps.clear();
+        baselineBlockedApps.add("com.google.android.youtube");
+        baselineBlockedApps.add("com.google.android.apps.youtube.kids");
+        baselineBlockedApps.addAll(resolveDefaultBrowserPackage());
+        synchronized (blockedAppsLock) {
+            blockedApps.clear();
+            blockedApps.addAll(baselineBlockedApps);
+        }
+    }
+
+    private Set<String> resolveDefaultBrowserPackage() {
+        HashSet<String> browserPackages = new HashSet<>();
+        PackageManager packageManager = getPackageManager();
+        Intent browserIntent = new Intent(Intent.ACTION_VIEW);
+        browserIntent.addCategory(Intent.CATEGORY_BROWSABLE);
+        browserIntent.setData(android.net.Uri.parse("https://www.example.com"));
+        List<ResolveInfo> resolved = packageManager.queryIntentActivities(browserIntent, 0);
+        for (ResolveInfo info : resolved) {
+            if (info != null && info.activityInfo != null && info.activityInfo.packageName != null) {
+                browserPackages.add(normalizePackageName(info.activityInfo.packageName));
+            }
+        }
+        return browserPackages;
+    }
+
+    private String normalizePackageName(String packageName) {
+        return packageName == null ? "" : packageName.trim().toLowerCase(Locale.US);
+    }
+
+    private boolean isBlockedPackage(String packageName) {
+        String normalized = normalizePackageName(packageName);
+        synchronized (blockedAppsLock) {
+            return blockedApps.contains(normalized);
+        }
+    }
+
+    private boolean shouldEnforceNow(String blockedPackage, long nowTs) {
+        String normalized = normalizePackageName(blockedPackage);
+        boolean samePackage = normalized.equals(lastBlockedPackage);
+        return !samePackage || (nowTs - lastActionTs) >= ENFORCEMENT_DEBOUNCE_MS;
+    }
+
+    private void enforceBlockedApp(String blockedPackage) {
+        if (launchBlockedScreen()) {
+            markEnforcement(blockedPackage);
+            return;
+        }
+        sendUserHome();
+        markEnforcement(blockedPackage);
+    }
+
+    private void markEnforcement(String blockedPackage) {
+        lastBlockedPackage = normalizePackageName(blockedPackage);
+        lastActionTs = System.currentTimeMillis();
+    }
+
+    private boolean launchBlockedScreen() {
+        try {
             Intent intent = new Intent(getApplicationContext(), BlockedScreenActivity.class);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
             startActivity(intent);
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to launch BlockedScreenActivity", e);
+            return false;
         }
-        lastForegroundApp = currentApp;
+    }
+
+    private void sendUserHome() {
+        Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+        homeIntent.addCategory(Intent.CATEGORY_HOME);
+        homeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(homeIntent);
+    }
+
+    private void startPollingThread() {
+        pollingThread = new HandlerThread("KidShield-Polling");
+        pollingThread.start();
+        pollingHandler = new Handler(pollingThread.getLooper());
+        pollingHandler.post(pollingRunnable);
+    }
+
+    private void stopPollingThread() {
+        if (pollingHandler != null) {
+            pollingHandler.removeCallbacksAndMessages(null);
+            pollingHandler = null;
+        }
+        if (pollingThread != null) {
+            pollingThread.quitSafely();
+            pollingThread = null;
+        }
+    }
+
+    private void pollAndEnforceBlockedApp() {
+        String foregroundPackage = resolveCurrentForegroundPackage();
+        if (foregroundPackage.isEmpty()) {
+            return;
+        }
+        checkForegroundApp(foregroundPackage);
+    }
+
+    private String resolveCurrentForegroundPackage() {
+        if (!lastForegroundApp.isEmpty()) {
+            return lastForegroundApp;
+        }
+        UsageStatsManager usageStatsManager = (UsageStatsManager) getSystemService(Context.USAGE_STATS_SERVICE);
+        if (usageStatsManager == null) {
+            return "";
+        }
+        long end = System.currentTimeMillis();
+        UsageEvents usageEvents = usageStatsManager.queryEvents(end - USAGE_LOOKBACK_MS, end);
+        UsageEvents.Event event = new UsageEvents.Event();
+        String current = "";
+        while (usageEvents.hasNextEvent()) {
+            usageEvents.getNextEvent(event);
+            if (event.getEventType() == UsageEvents.Event.MOVE_TO_FOREGROUND && event.getPackageName() != null) {
+                current = normalizePackageName(event.getPackageName());
+            }
+        }
+        return current;
     }
 
     private void fetchAndUploadInstalledApps() {
@@ -290,6 +443,7 @@ public class MonitoringService extends Service {
         super.onDestroy();
         Log.d(TAG, "Service Destroyed");
         unregisterReceiver(appEventReceiver);
+        stopPollingThread();
     }
 
     private void createNotificationChannel() {
