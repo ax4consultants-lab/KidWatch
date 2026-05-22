@@ -42,7 +42,10 @@
         <activity
             android:name=".Activities.BlockedScreenActivity"
             android:exported="true"
+            android:excludeFromRecents="true"
             android:launchMode="singleTask"
+            android:noHistory="true"
+            android:taskAffinity=""
             android:theme="@style/Theme.AppCompat.NoActionBar" />
         <activity
             android:name=".Activities.ChildDetailActivity"
