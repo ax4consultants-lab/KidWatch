@@ -67,6 +67,14 @@
         <!-- Hidden primary launcher target; launcher exposure is controlled by aliases below. -->
         <activity
             android:name=".Activities.LoginActivity"
+            android:exported="true" />
+
+        <activity-alias
+            android:name=".Activities.GenericEntryAlias"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="Settings"
             android:exported="false" />
 
         <!-- Default launcher alias. Keep enabled for normal installs. -->
